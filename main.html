@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Devices Tycoon</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let gameDb = null;
+        let gameAuth = null;
+        let gameUserId = null;
+        let gameDocRef = null;
+
+        // Initialize Firebase services
+        try {
+            const app = initializeApp(firebaseConfig);
+            gameDb = getFirestore(app);
+            gameAuth = getAuth(app);
+        } catch (e) {
+            console.error("Firebase initialization failed:", e);
+        }
+
+        // Handle authentication and start the game
+        const authReadyPromise = new Promise(resolve => {
+            onAuthStateChanged(gameAuth, async (user) => {
+                if (user) {
+                    gameUserId = user.uid;
+                    console.log("Firebase user signed in:", gameUserId);
+                    resolve();
+                } else {
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(gameAuth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(gameAuth);
+                        }
+                    } catch (error) {
+                        console.error("Firebase auth error:", error);
+                        // If auth fails, try anonymous sign-in
+                        await signInAnonymously(gameAuth).catch(e => console.error("Anonymous sign-in failed:", e));
+                    }
+                }
+            });
+        });
+
+        window.game = {
+            authReadyPromise,
+            getUserId: () => gameUserId,
+            getDb: () => gameDb,
+            getDocRef: () => gameDocRef,
+        };
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            transition: background-color 0.3s ease;
+        }
+        .container {
+            max-width: 1200px;
+        }
+        .section-header {
+            border-bottom: 2px solid #e5e7eb;
+            padding-bottom: 0.5rem;
+        }
+        .panel {
+            background-color: white;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+            transition: transform 0.2s ease-in-out;
+        }
+        .panel:hover {
+            transform: translateY(-5px);
+        }
+        .btn-primary {
+            transition: all 0.2s ease-in-out;
+            transform: scale(1);
+        }
+        .btn-primary:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+        }
+        .btn-secondary {
+            transition: all 0.2s ease-in-out;
+        }
+        .btn-secondary:hover {
+            transform: scale(1.05);
+            background-color: #e5e7eb;
+        }
+        .input-range::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #3b82f6;
+            cursor: pointer;
+            border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+        .input-range::-webkit-slider-thumb:hover {
+            background: #2563eb;
+        }
+        .input-range::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #3b82f6;
+            cursor: pointer;
+            border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+        .input-range::-moz-range-thumb:hover {
+            background: #2563eb;
+        }
+        #message-box {
+            display: none;
+        }
+        .glass-effect {
+            backdrop-filter: blur(10px);
+            background-color: rgba(255, 255, 255, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 1.5rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex flex-col min-h-screen items-center justify-center p-4 sm:p-6 lg:p-8">
+
+    <div class="glass-effect p-8 rounded-3xl w-full max-w-4xl mx-auto">
+        <!-- Game Title and User ID -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800 mb-2">Devices Tycoon</h1>
+            <p class="text-lg text-gray-600">Симулятор создания и продажи устройств</p>
+            <div id="user-id-display" class="mt-4 text-xs text-gray-500 font-mono hidden"></div>
+        </header>
+
+        <!-- Loading Screen -->
+        <div id="loading-screen" class="absolute inset-0 flex flex-col items-center justify-center bg-white bg-opacity-75 z-50 rounded-3xl">
+            <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-500"></div>
+            <p class="mt-4 text-lg text-gray-700">Загрузка игры...</p>
+        </div>
+
+        <!-- Main Game UI -->
+        <main id="game-ui" class="hidden">
+            <!-- Game Stats Dashboard -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div class="panel text-center">
+                    <h2 class="text-xl font-bold text-gray-700">Деньги</h2>
+                    <p id="money-display" class="text-3xl font-mono text-green-600 mt-2">$100,000</p>
+                </div>
+                <div class="panel text-center">
+                    <h2 class="text-xl font-bold text-gray-700">Очки исследований</h2>
+                    <p id="research-display" class="text-3xl font-mono text-blue-600 mt-2">0</p>
+                </div>
+                <div class="panel text-center">
+                    <h2 class="text-xl font-bold text-gray-700">Год</h2>
+                    <p id="year-display" class="text-3xl font-mono text-gray-600 mt-2">2024</p>
+                </div>
+            </div>
+
+            <!-- Main Sections -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- Create Device Panel -->
+                <div class="panel">
+                    <h2 class="text-2xl font-bold section-header text-gray-800 mb-4">Создать устройство</h2>
+                    <form id="create-device-form" class="space-y-4">
+                        <div>
+                            <label for="device-name" class="block text-sm font-medium text-gray-700">Название устройства</label>
+                            <input type="text" id="device-name" name="deviceName" placeholder="Суперфон X" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50">
+                        </div>
+
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Тип устройства</label>
+                            <select id="device-type" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50">
+                                <option value="phone">Телефон</option>
+                                <option value="tablet">Планшет</option>
+                                <option value="pc">ПК</option>
+                            </select>
+                        </div>
+
+                        <!-- Component Sliders -->
+                        <div>
+                            <label id="cpu-label" for="cpu-slider" class="block text-sm font-medium text-gray-700">Процессор: Базовый (5000)</label>
+                            <input type="range" id="cpu-slider" min="1" max="1" value="1" class="input-range w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer mt-1">
+                        </div>
+                        <div>
+                            <label id="gpu-label" for="gpu-slider" class="block text-sm font-medium text-gray-700">Видеокарта: Базовая (3000)</label>
+                            <input type="range" id="gpu-slider" min="1" max="1" value="1" class="input-range w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer mt-1">
+                        </div>
+                        <div>
+                            <label id="ram-label" for="ram-slider" class="block text-sm font-medium text-gray-700">ОЗУ: Базовая (2000)</label>
+                            <input type="range" id="ram-slider" min="1" max="1" value="1" class="input-range w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer mt-1">
+                        </div>
+
+                        <div class="flex flex-col sm:flex-row justify-between items-center mt-6 text-sm font-semibold">
+                            <span id="cost-display" class="text-red-500 mb-2 sm:mb-0">Стоимость: $0</span>
+                            <span id="sales-display" class="text-blue-500">Прогнозируемые продажи: 0</span>
+                        </div>
+                        
+                        <div class="mt-6">
+                            <button type="submit" class="w-full btn-primary bg-blue-500 text-white py-3 rounded-xl font-bold hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Выпустить устройство</button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Research and History Panel -->
+                <div class="flex flex-col gap-8">
+                    <!-- Research Panel -->
+                    <div class="panel">
+                        <h2 class="text-2xl font-bold section-header text-gray-800 mb-4">Исследования</h2>
+                        <ul id="research-list" class="space-y-3">
+                            <!-- Research items will be populated here -->
+                        </ul>
+                    </div>
+
+                    <!-- Market and History Panel -->
+                    <div class="panel flex-grow">
+                        <h2 class="text-2xl font-bold section-header text-gray-800 mb-4">Рынок и история</h2>
+                        <div id="history-list" class="space-y-4">
+                            <!-- Device history will be populated here -->
+                            <p class="text-gray-500 italic text-center">Вы еще не выпустили ни одного устройства.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Message Box Modal -->
+        <div id="message-box" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div class="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full text-center">
+                <h3 id="message-title" class="text-xl font-bold mb-2"></h3>
+                <p id="message-text" class="text-gray-700 mb-4"></p>
+                <button id="close-message-box" class="w-full btn-primary bg-blue-500 text-white py-2 rounded-lg font-bold">ОК</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script type="module">
+        import { doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Game state variables
+        let gameState = {
+            money: 100000,
+            researchPoints: 0,
+            year: 2024,
+            techTree: {
+                cpu: [
+                    { name: 'Базовый', cost: 5000, perf: 100, unlocked: true, researchCost: 0 },
+                    { name: 'Улучшенный', cost: 15000, perf: 250, unlocked: false, researchCost: 10000 },
+                    { name: 'Продвинутый', cost: 50000, perf: 600, unlocked: false, researchCost: 30000 }
+                ],
+                gpu: [
+                    { name: 'Базовая', cost: 3000, perf: 80, unlocked: true, researchCost: 0 },
+                    { name: 'Улучшенная', cost: 10000, perf: 200, unlocked: false, researchCost: 8000 },
+                    { name: 'Продвинутая', cost: 40000, perf: 500, unlocked: false, researchCost: 25000 }
+                ],
+                ram: [
+                    { name: 'Базовая', cost: 2000, perf: 50, unlocked: true, researchCost: 0 },
+                    { name: 'Улучшенная', cost: 8000, perf: 150, unlocked: false, researchCost: 7000 },
+                    { name: 'Продвинутая', cost: 30000, perf: 400, unlocked: false, researchCost: 20000 }
+                ]
+            },
+            history: []
+        };
+
+        // DOM elements
+        const ui = {
+            moneyDisplay: document.getElementById('money-display'),
+            researchDisplay: document.getElementById('research-display'),
+            yearDisplay: document.getElementById('year-display'),
+            createDeviceForm: document.getElementById('create-device-form'),
+            cpuSlider: document.getElementById('cpu-slider'),
+            gpuSlider: document.getElementById('gpu-slider'),
+            ramSlider: document.getElementById('ram-slider'),
+            cpuLabel: document.getElementById('cpu-label'),
+            gpuLabel: document.getElementById('gpu-label'),
+            ramLabel: document.getElementById('ram-label'),
+            costDisplay: document.getElementById('cost-display'),
+            salesDisplay: document.getElementById('sales-display'),
+            researchList: document.getElementById('research-list'),
+            historyList: document.getElementById('history-list'),
+            loadingScreen: document.getElementById('loading-screen'),
+            gameUI: document.getElementById('game-ui'),
+            messageBox: document.getElementById('message-box'),
+            messageTitle: document.getElementById('message-title'),
+            messageText: document.getElementById('message-text'),
+            closeMessageBox: document.getElementById('close-message-box'),
+            userIdDisplay: document.getElementById('user-id-display')
+        };
+
+        let currentComponentCosts = { cpu: 0, gpu: 0, ram: 0 };
+        let currentComponentSales = { cpu: 0, gpu: 0, ram: 0 };
+        let gameLoopInterval = null;
+        let isSaving = false;
+        let lastSaveTime = Date.now();
+        const autoSaveInterval = 5000; // Save every 5 seconds
+
+        // --- Game Logic Functions ---
+
+        /**
+         * Updates the game state based on user actions.
+         */
+        function updateGame() {
+            gameState.year += 0.25; // Advance time by a quarter year
+            gameState.researchPoints += 100; // Passive research gain
+            renderUI();
+        }
+
+        /**
+         * Renders the UI with the current game state.
+         */
+        function renderUI() {
+            ui.moneyDisplay.textContent = `$${gameState.money.toLocaleString()}`;
+            ui.researchDisplay.textContent = gameState.researchPoints.toLocaleString();
+            ui.yearDisplay.textContent = Math.floor(gameState.year);
+
+            // Update component sliders and labels based on unlocked tech
+            updateComponentSliders('cpu', ui.cpuSlider, ui.cpuLabel);
+            updateComponentSliders('gpu', ui.gpuSlider, ui.gpuLabel);
+            updateComponentSliders('ram', ui.ramSlider, ui.ramLabel);
+            
+            updateCostAndSales();
+            renderResearchList();
+            renderHistory();
+
+            // Auto-save the game
+            if (Date.now() - lastSaveTime > autoSaveInterval) {
+                saveGame();
+                lastSaveTime = Date.now();
+            }
+        }
+
+        /**
+         * Updates a single component slider and its label based on unlocked technology.
+         * @param {string} type - Component type ('cpu', 'gpu', 'ram').
+         * @param {HTMLInputElement} slider - The slider element.
+         * @param {HTMLLabelElement} label - The label element.
+         */
+        function updateComponentSliders(type, slider, label) {
+            const unlockedTech = gameState.techTree[type].filter(tech => tech.unlocked);
+            slider.max = unlockedTech.length;
+            
+            // Get selected component details
+            const selectedComponent = unlockedTech[slider.value - 1];
+            if (selectedComponent) {
+                label.textContent = `${selectedComponent.name}: (${selectedComponent.perf.toLocaleString()})`;
+                currentComponentCosts[type] = selectedComponent.cost;
+                currentComponentSales[type] = selectedComponent.perf;
+            } else {
+                label.textContent = `Нет доступных компонентов`;
+            }
+        }
+
+        /**
+         * Calculates and updates the total cost and projected sales of a new device.
+         */
+        function updateCostAndSales() {
+            const totalCost = currentComponentCosts.cpu + currentComponentCosts.gpu + currentComponentCosts.ram;
+            const totalSalesPotential = currentComponentSales.cpu + currentComponentSales.gpu + currentComponentSales.ram;
+
+            const baseCost = 20000; // Base manufacturing and marketing cost
+            const baseSales = 50000; // Base sales for a new device
+
+            const finalCost = baseCost + totalCost;
+            const finalSales = baseSales + (totalSalesPotential * 100); // Simple sales formula
+
+            ui.costDisplay.textContent = `Стоимость: $${finalCost.toLocaleString()}`;
+            ui.salesDisplay.textContent = `Прогнозируемые продажи: $${finalSales.toLocaleString()}`;
+        }
+
+        /**
+         * Handles the creation and release of a new device.
+         * @param {Event} e - The form submission event.
+         */
+        function createDevice(e) {
+            e.preventDefault();
+
+            const deviceName = ui.createDeviceForm['deviceName'].value || 'Новое устройство';
+            const deviceType = ui.createDeviceForm['device-type'].value;
+            const finalCost = currentComponentCosts.cpu + currentComponentCosts.gpu + currentComponentCosts.ram + 20000;
+            const finalSales = 50000 + (currentComponentSales.cpu + currentComponentSales.gpu + currentComponentSales.ram) * 100;
+
+            if (gameState.money < finalCost) {
+                showMessage('Недостаточно денег', 'Вы не можете позволить себе создать это устройство.');
+                return;
+            }
+
+            // Deduct cost and add sales
+            gameState.money -= finalCost;
+            gameState.money += finalSales;
+
+            const newDevice = {
+                name: deviceName,
+                type: deviceType,
+                cpu: gameState.techTree.cpu[ui.cpuSlider.value - 1].name,
+                gpu: gameState.techTree.gpu[ui.gpuSlider.value - 1].name,
+                ram: gameState.techTree.ram[ui.ramSlider.value - 1].name,
+                cost: finalCost,
+                sales: finalSales,
+                year: Math.floor(gameState.year)
+            };
+            gameState.history.unshift(newDevice);
+
+            // Limit history to 5 items to keep it clean
+            if (gameState.history.length > 5) {
+                gameState.history.pop();
+            }
+
+            showMessage('Устройство выпущено!', `Устройство "${deviceName}" выпущено. Вы заработали $${finalSales.toLocaleString()}!`);
+            renderUI();
+            saveGame();
+        }
+
+        /**
+         * Renders the list of researchable technologies.
+         */
+        function renderResearchList() {
+            ui.researchList.innerHTML = '';
+            for (const type in gameState.techTree) {
+                gameState.techTree[type].forEach(tech => {
+                    if (!tech.unlocked && tech.researchCost > 0) {
+                        const li = document.createElement('li');
+                        li.className = 'flex items-center justify-between p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition';
+                        const textContent = document.createElement('div');
+                        textContent.innerHTML = `<h3 class="font-bold">${tech.name} ${type.toUpperCase()}</h3><p class="text-sm text-gray-600">Стоимость: <span class="text-blue-500">${tech.researchCost.toLocaleString()} RP</span></p>`;
+                        
+                        const button = document.createElement('button');
+                        button.textContent = 'Исследовать';
+                        button.className = `btn-secondary px-4 py-2 rounded-lg text-sm font-semibold border ${gameState.researchPoints >= tech.researchCost ? 'bg-blue-500 text-white border-blue-500' : 'bg-gray-300 text-gray-500 cursor-not-allowed border-gray-300'}`;
+                        button.disabled = gameState.researchPoints < tech.researchCost;
+                        
+                        button.onclick = () => {
+                            if (gameState.researchPoints >= tech.researchCost) {
+                                gameState.researchPoints -= tech.researchCost;
+                                tech.unlocked = true;
+                                showMessage('Исследование завершено', `Вы успешно исследовали ${tech.name}!`);
+                                renderUI();
+                                saveGame();
+                            } else {
+                                showMessage('Недостаточно очков исследований', 'Вам нужно больше очков исследований для этого проекта.');
+                            }
+                        };
+                        
+                        li.appendChild(textContent);
+                        li.appendChild(button);
+                        ui.researchList.appendChild(li);
+                    }
+                });
+            }
+            if (ui.researchList.children.length === 0) {
+                ui.researchList.innerHTML = '<p class="text-gray-500 italic text-center">Все технологии исследованы!</p>';
+            }
+        }
+
+        /**
+         * Renders the history of released devices.
+         */
+        function renderHistory() {
+            ui.historyList.innerHTML = '';
+            if (gameState.history.length === 0) {
+                ui.historyList.innerHTML = '<p class="text-gray-500 italic text-center">Вы еще не выпустили ни одного устройства.</p>';
+            } else {
+                gameState.history.forEach(device => {
+                    const div = document.createElement('div');
+                    div.className = 'p-4 bg-gray-50 rounded-lg shadow-sm';
+                    div.innerHTML = `
+                        <h4 class="font-bold text-lg">${device.name} (${device.year})</h4>
+                        <p class="text-sm text-gray-600">Тип: ${device.type}</p>
+                        <p class="text-sm text-gray-600">Процессор: ${device.cpu}</p>
+                        <p class="text-sm text-gray-600">Видеокарта: ${device.gpu}</p>
+                        <p class="text-sm text-gray-600">ОЗУ: ${device.ram}</p>
+                        <p class="text-sm text-gray-600 font-semibold mt-2">Прибыль: <span class="text-green-600">$${(device.sales - device.cost).toLocaleString()}</span></p>
+                    `;
+                    ui.historyList.appendChild(div);
+                });
+            }
+        }
+
+        // --- Firebase Functions ---
+
+        /**
+         * Saves the current game state to Firestore.
+         */
+        async function saveGame() {
+            if (isSaving || !window.game.getUserId()) return;
+            isSaving = true;
+
+            const gameDb = window.game.getDb();
+            const userId = window.game.getUserId();
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const userDocRef = doc(gameDb, 'artifacts', appId, 'users', userId, 'games', 'tycoon');
+            window.game.gameDocRef = userDocRef;
+
+            try {
+                // We use setDoc with merge:true to avoid overwriting the entire document
+                // if there are other fields we're not tracking.
+                await setDoc(userDocRef, {
+                    gameState: gameState,
+                    lastUpdated: new Date()
+                }, { merge: true });
+                console.log("Game state saved successfully.");
+            } catch (e) {
+                console.error("Error saving game state: ", e);
+            } finally {
+                isSaving = false;
+            }
+        }
+
+        /**
+         * Loads the game state from Firestore and sets up a real-time listener.
+         */
+        async function loadGame() {
+            await window.game.authReadyPromise; // Wait for authentication
+            const gameDb = window.game.getDb();
+            const userId = window.game.getUserId();
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const userDocRef = doc(gameDb, 'artifacts', appId, 'users', userId, 'games', 'tycoon');
+            window.game.gameDocRef = userDocRef;
+            
+            // Display the user ID for debugging/identification purposes
+            if (userId) {
+                ui.userIdDisplay.textContent = `Ваш ID: ${userId}`;
+                ui.userIdDisplay.classList.remove('hidden');
+            }
+
+            // Set up a real-time listener
+            onSnapshot(userDocRef, (docSnap) => {
+                if (docSnap.exists() && docSnap.data().gameState) {
+                    const savedState = docSnap.data().gameState;
+                    // Restore only the properties we care about
+                    gameState.money = savedState.money || gameState.money;
+                    gameState.researchPoints = savedState.researchPoints || gameState.researchPoints;
+                    gameState.year = savedState.year || gameState.year;
+                    gameState.history = savedState.history || gameState.history;
+
+                    // Ensure tech tree is restored correctly, merging with current state
+                    if (savedState.techTree) {
+                        for (const type in savedState.techTree) {
+                            savedState.techTree[type].forEach(savedTech => {
+                                const currentTech = gameState.techTree[type].find(t => t.name === savedTech.name);
+                                if (currentTech) {
+                                    currentTech.unlocked = savedTech.unlocked;
+                                }
+                            });
+                        }
+                    }
+                    console.log("Game state loaded from Firestore.");
+                } else {
+                    console.log("No game data found in Firestore. Starting a new game.");
+                    saveGame(); // Save initial state for the new user
+                }
+                
+                // Hide loading screen and show UI after initial load
+                ui.loadingScreen.classList.add('hidden');
+                ui.gameUI.classList.remove('hidden');
+                
+                // Initial render and start game loop
+                renderUI();
+                if (!gameLoopInterval) {
+                    gameLoopInterval = setInterval(updateGame, 1000);
+                }
+            }, (error) => {
+                console.error("Error listening to game data:", error);
+                // In case of an error, hide loading screen and show UI anyway
+                ui.loadingScreen.classList.add('hidden');
+                ui.gameUI.classList.remove('hidden');
+                renderUI();
+                if (!gameLoopInterval) {
+                    gameLoopInterval = setInterval(updateGame, 1000);
+                }
+            });
+        }
+        
+        // --- UI Functions ---
+
+        /**
+         * Displays a modal message box.
+         * @param {string} title - The title of the message.
+         * @param {string} text - The body of the message.
+         */
+        function showMessage(title, text) {
+            ui.messageTitle.textContent = title;
+            ui.messageText.textContent = text;
+            ui.messageBox.style.display = 'flex';
+        }
+
+        // --- Event Listeners ---
+        ui.createDeviceForm.addEventListener('submit', createDevice);
+        ui.cpuSlider.addEventListener('input', updateCostAndSales);
+        ui.gpuSlider.addEventListener('input', updateCostAndSales);
+        ui.ramSlider.addEventListener('input', updateCostAndSales);
+        ui.closeMessageBox.addEventListener('click', () => {
+            ui.messageBox.style.display = 'none';
+        });
+
+        // Start the game on window load
+        window.onload = function() {
+            loadGame();
+        };
+
+    </script>
+</body>
+</html>
